@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#05080d">
+<title>車窗跑酷 AR</title>
+<style>
+*{box-sizing:border-box;-webkit-user-select:none;user-select:none}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;font-family:Arial,"Noto Sans TC",sans-serif;touch-action:none}
+body{overscroll-behavior:none}
+#cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#111;z-index:0}
+#world{position:fixed;inset:0;z-index:1;overflow:hidden}
+#dark{position:absolute;inset:0;background:linear-gradient(#0000 55%,#0006);pointer-events:none}
+#hud{position:absolute;top:max(10px,env(safe-area-inset-top));left:12px;right:12px;display:flex;justify-content:space-between;z-index:10;color:white;font-weight:900;text-shadow:0 2px 4px #000}
+.pill{background:#0009;border:1px solid #fff5;border-radius:16px;padding:8px 12px;margin:2px;backdrop-filter:blur(4px)}
+#track{position:absolute;left:8%;right:8%;bottom:18%;height:5px;background:#fff9;border-radius:5px;box-shadow:0 0 10px #000}
+#player{position:absolute;left:50%;bottom:18%;transform:translate(-50%,50%);font-size:64px;z-index:7;filter:drop-shadow(0 7px 4px #0009);will-change:left,bottom}
+#player.jump{animation:jump .58s cubic-bezier(.2,.8,.3,1)}
+@keyframes jump{0%{bottom:18%}45%{bottom:45%}100%{bottom:18%}}
+.obj{position:absolute;z-index:6;will-change:top;filter:drop-shadow(0 5px 3px #0009)}
+.ob{font-size:48px}.coin{font-size:38px}
+#buttons{position:absolute;bottom:max(14px,env(safe-area-inset-bottom));left:0;right:0;display:flex;justify-content:space-between;padding:0 22px;z-index:12}
+.control{width:68px;height:56px;border-radius:18px;border:1px solid #fff8;background:#0008;color:#fff;font-size:28px;font-weight:900;backdrop-filter:blur(4px)}
+#jumpBtn{width:90px}
+.panel{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:#0009}
+.card{width:min(90vw,560px);padding:25px;border-radius:24px;background:#101820ee;border:1px solid #fff4;color:#fff;text-align:center;box-shadow:0 15px 60px #000}
+h1{margin:0 0 8px;font-size:30px}p{line-height:1.55;color:#ddd}
+.main{padding:13px 24px;border:0;border-radius:16px;background:#fff;color:#111;font-size:18px;font-weight:900}
+.small{font-size:12px;color:#aaa;margin-top:12px}
+#rotate{display:none;position:fixed;inset:0;z-index:99;background:#05080d;color:#fff;align-items:center;justify-content:center;text-align:center;padding:30px;font-size:22px;font-weight:900}
+@media (orientation:portrait){#rotate{display:flex}}
+</style>
+</head>
+<body>
+<div id="rotate">📱↔️<br><br>請把手機橫過來遊玩<br><span style="font-size:14px;color:#aaa">本遊戲設計為橫向畫面</span></div>
+<video id="cam" autoplay playsinline muted></video>
+<div id="world">
+  <div id="dark"></div>
+  <div id="hud">
+    <div class="pill">⭐ <span id="score">0</span></div>
+    <div class="pill">🪙 <span id="coins">0</span></div>
+    <div class="pill">❤️ <span id="life">3</span></div>
+  </div>
+  <div id="track"></div>
+  <div id="player">🏃</div>
+  <div id="buttons">
+    <button class="control" id="L">◀</button>
+    <button class="control" id="jumpBtn">⬆</button>
+    <button class="control" id="R">▶</button>
+  </div>
+</div>
+
+<div class="panel" id="start">
+ <div class="card">
+  <h1>🚗 車窗跑酷 AR</h1>
+  <p>乘客遊戲：開啟手機後鏡頭，讓<strong>車窗外真實景色</strong>成為遊戲背景，控制角色閃避障礙並收集金幣。</p>
+  <p>◀ ▶ 閃避　　⬆ 跳躍　　左右滑動也可以操作</p>
+  <button class="main" id="startBtn">開啟鏡頭並開始</button>
+  <div class="small">請只在乘客座位遊玩，不要在駕駛時操作手機。</div>
+ </div>
+</div>
+<div class="panel" id="over" style="display:none">
+ <div class="card">
+  <h1>🏁 遊戲結束</h1>
+  <p>分數：<strong id="final">0</strong>　金幣：<strong id="finalCoins">0</strong></p>
+  <button class="main" id="again">再玩一次</button>
+ </div>
+</div>
+
+<script>
+const cam=document.getElementById('cam'), world=document.getElementById('world'), player=document.getElementById('player');
+let lane=1, score=0, coins=0, life=3, running=false, jumping=false, last=0, spawnT=0, speed=.23, items=[];
+const lanes=[27,50,73];
+
+async function openCamera(){
+  if(!navigator.mediaDevices?.getUserMedia) throw new Error("camera unsupported");
+  const stream=await navigator.mediaDevices.getUserMedia({
+    video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},
+    audio:false
+  });
+  cam.srcObject=stream;
+}
+function setLane(n){lane=Math.max(0,Math.min(2,n));player.style.left=lanes[lane]+"%"}
+function move(d){if(running)setLane(lane+d)}
+function jump(){
+ if(!running||jumping)return;
+ jumping=true;player.classList.add('jump');
+ setTimeout(()=>{player.classList.remove('jump');jumping=false},590);
+}
+function makeItem(){
+ const el=document.createElement('div');
+ const coin=Math.random()<.27;
+ el.className='obj '+(coin?'coin':'ob');
+ el.textContent=coin?'🪙':['🚧','🪨','🪵','🛑'][Math.floor(Math.random()*4)];
+ const l=Math.floor(Math.random()*3);
+ el.dataset.lane=l;el.dataset.y=-12;el.dataset.coin=coin?'1':'0';
+ el.style.left=lanes[l]+'%';el.style.top='-12%';
+ world.appendChild(el);items.push(el);
+}
+function hit(a,b){
+ const A=a.getBoundingClientRect(),B=b.getBoundingClientRect();
+ return A.left<B.right && A.right>B.left && A.top<B.bottom && A.bottom>B.top;
+}
+function end(){
+ running=false;
+ document.getElementById('final').textContent=score;
+ document.getElementById('finalCoins').textContent=coins;
+ document.getElementById('over').style.display='flex';
+}
+function frame(t){
+ if(!running)return;
+ const dt=Math.min(40,t-(last||t));last=t;spawnT+=dt;
+ const interval=Math.max(380,900-speed*650);
+ if(spawnT>interval){spawnT=0;makeItem()}
+ speed=Math.min(.62,speed+dt*.000004);
+ for(let i=items.length-1;i>=0;i--){
+  const o=items[i], y=parseFloat(o.dataset.y)+speed*dt*.075;
+  o.dataset.y=y;o.style.top=y+'%';
+  if(hit(o,player)){
+   if(o.dataset.coin==='1'){
+    coins++;score+=100;document.getElementById('coins').textContent=coins;document.getElementById('score').textContent=score;
+   }else if(!o.dataset.hit && !jumping){
+    o.dataset.hit='1';life--;document.getElementById('life').textContent=life;
+    if(life<=0){o.remove();items.splice(i,1);end();return}
+   }
+   o.remove();items.splice(i,1);continue;
+  }
+  if(y>112){o.remove();items.splice(i,1);score+=10;document.getElementById('score').textContent=score}
+ }
+ requestAnimationFrame(frame);
+}
+function startGame(){
+ document.getElementById('start').style.display='none';document.getElementById('over').style.display='none';
+ items.forEach(x=>x.remove());items=[];score=0;coins=0;life=3;speed=.23;lane=1;setLane(1);
+ ['score','coins'].forEach(id=>document.getElementById(id).textContent=0);document.getElementById('life').textContent=3;
+ running=true;last=performance.now();requestAnimationFrame(frame);
+}
+document.getElementById('startBtn').onclick=async()=>{
+ try{await openCamera();await cam.play();startGame()}
+ catch(e){alert('請允許瀏覽器使用相機後再開始。若仍無法開啟，請確認遊戲網址是 HTTPS。')}
+};
+document.getElementById('again').onclick=startGame;
+document.getElementById('L').onclick=()=>move(-1);document.getElementById('R').onclick=()=>move(1);document.getElementById('jumpBtn').onclick=jump;
+let sx=0,sy=0;
+world.addEventListener('touchstart',e=>{sx=e.touches[0].clientX;sy=e.touches[0].clientY},{passive:true});
+world.addEventListener('touchend',e=>{
+ const dx=e.changedTouches[0].clientX-sx,dy=e.changedTouches[0].clientY-sy;
+ if(Math.abs(dx)>45 && Math.abs(dx)>Math.abs(dy))move(dx>0?1:-1);
+ else if(dy<-40)jump();
+},{passive:true});
+addEventListener('keydown',e=>{if(e.key==='ArrowLeft')move(-1);if(e.key==='ArrowRight')move(1);if(e.key==='ArrowUp'||e.key===' ')jump()});
+setLane(1);
+</script>
+</body>
+</html>
